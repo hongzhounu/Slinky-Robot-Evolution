@@ -1,3 +1,11 @@
 .DS_Store
 .idea
 __pycache__
+
+generations
+generations_cubic
+generations_no_mod
+generations_piecewise_act_add5
+generations_piecewise_act_half
+generations_quadratic
+generations_quartic

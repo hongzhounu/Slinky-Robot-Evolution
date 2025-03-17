@@ -1,4 +1,3 @@
-from robot_config import robots
 import sys
 import taichi as ti
 import math
@@ -6,12 +5,12 @@ import numpy as np
 import os
 
 real = ti.f32
-ti.init(default_fp=real)
-
-max_steps = 4096
+#ti.init(default_fp=real)
+ti.init(default_fp=ti.f32, arch=ti.cpu, flatten_if=True, fast_math=True)
+max_steps = 8192
 vis_interval = 256
 output_vis_interval = 16
-steps = 2048
+steps = 4096
 assert steps * 2 <= max_steps
 
 vis_resolution = 1024
@@ -76,6 +75,7 @@ weights2 = scalar()
 bias2 = scalar()
 actuation = scalar()
 
+aging_peak = 0.4
 
 def n_input_states():
     return n_sin_waves + 6 * n_objects + 2
@@ -145,6 +145,12 @@ def nn2(t: ti.i32):
             act += weights2[i, j] * hidden[t, j]
         act += bias2[i]
         act = ti.tanh(act)
+        # Aging/simulate weakening of actuation
+        if t > steps * aging_peak:
+            # Reduce actuation linearly after aging_peak
+            remaining_time = t - (steps * aging_peak)
+            total_remaining_time = steps * (1 - aging_peak)
+            act *= max(0.3, (1 - (remaining_time / total_remaining_time)))
         actuation[t, i] = act
 
 
@@ -256,6 +262,7 @@ def apply_spring_force(t: ti.i32):
         length = dist.norm() + 1e-4
 
         act = actuation[t, i]
+        # print(f"{t}, {i}, {act}")
 
         is_joint = spring_length[i] == -1
 
@@ -306,7 +313,12 @@ def advance_no_toi(t: ti.i32):
 
 @ti.kernel
 def compute_loss(t: ti.i32):
-    loss[None] = (x[t, head_id] - goal[None]).norm()
+    loss[None] = 0
+    loss[None] -= 0.5 * v[t, head_id].norm()  # Encourage speed
+    loss[None] += (x[t, head_id] - goal[None]).norm()  # Penalize being far from goal
+
+# def compute_loss(t: ti.i32):
+#     loss[None] = (x[t, head_id] - goal[None]).norm()
 
 
 gui = ti.GUI('Rigid Body Simulation', (512, 512), background_color=0xFFFFFF)
@@ -319,7 +331,6 @@ def forward(output=None, visualize=True):
     interval = vis_interval
     total_steps = steps
     if output:
-        print(output)
         interval = output_vis_interval
         os.makedirs('rigid_body/{}/'.format(output), exist_ok=True)
         total_steps *= 2
@@ -417,8 +428,10 @@ def setup_robot(objects, springs, h_id):
     n_objects = len(objects)
     n_springs = len(springs)
     allocate_fields()
-
-    print('n_objects=', n_objects, '   n_springs=', n_springs)
+            
+def build_robot(objects, springs, h_id):
+    n_objects = len(objects)
+    n_springs = len(springs)
 
     for i in range(n_objects):
         x[0, i] = objects[i][0]
@@ -462,11 +475,13 @@ def optimize(toi=True, visualize=True):
     losses = []
     for iter in range(20):
         clear_states()
+        aSlinky = SlinkyTopography(SH, SW, NS, CubicFunction(A, B, C, D))
+        build_robot(*aSlinky.slinkyRobot())
 
         with ti.ad.Tape(loss):
             forward(visualize=visualize)
 
-        print('Iter=', iter, 'Loss=', loss[None])
+        # print('Iter=', iter, 'Loss=', loss[None])
 
         total_norm_sqr = 0
         for i in range(n_hidden):
@@ -479,7 +494,7 @@ def optimize(toi=True, visualize=True):
                 total_norm_sqr += weights2.grad[i, j]**2
             total_norm_sqr += bias2.grad[i]**2
 
-        print(total_norm_sqr)
+        # print(total_norm_sqr)
 
         gradient_clip = 0.2
         scale = learning_rate * min(
@@ -495,23 +510,153 @@ def optimize(toi=True, visualize=True):
             bias2[i] -= scale * bias2.grad[i]
 
         losses.append(loss[None])
+    print(loss[None])
     return losses
 
 
-robot_id = 0
-if len(sys.argv) != 3:
+# robot_id = 0
+# if len(sys.argv) != 3:
+#     print(
+#         "Usage: python3 rigid_body.py [robot_id=0, 1, 2, ...] [cmd=train/plot]"
+#     )
+#     exit(-1)
+# else:
+#     robot_id = int(sys.argv[1])
+#     cmd = sys.argv[2]
+# print(robot_id, cmd)
+
+if len(sys.argv) < 8:
     print(
-        "Usage: python3 rigid_body.py [robot_id=0, 1, 2, ...] [cmd=train/plot]"
+        "Usage: python3 rigid_body.py [cmd=train/plot] [initA=0] [initB=0] [initC=0]"
     )
     exit(-1)
-else:
-    robot_id = int(sys.argv[1])
-    cmd = sys.argv[2]
-print(robot_id, cmd)
+
+cmd = sys.argv[1]
+SH = float(sys.argv[2])
+SW = float(sys.argv[3])
+NS = int(sys.argv[4])
+A = float(sys.argv[5])
+B = float(sys.argv[6])
+C = float(sys.argv[7])
+D = float(sys.argv[8])
+# E = float(sys.argv[9])
+
+
+class ConstFunction:
+    def __init__(self, a=0):
+        self.a = 0
+    
+    def run(self, x):
+        return self.a
+
+class LogarithmicFunction:
+    def __init__(self, a, b):
+        self.a = a
+        self.b = b
+        
+    def run(self, x):
+        return self.a * math.log(x) + self.b
+    
+class QuadraticFunction:
+    def __init__(self, a, b, c):
+        self.a = a
+        self.b = b
+        self.c = c
+        
+    def run(self, x):
+        return self.a * (x ** 2) + self.b * x + self.c
+    
+class CubicFunction:
+    def __init__(self, a, b, c, d):
+        self.a = a
+        self.b = b
+        self.c = c
+        self.d = d
+        
+    def run(self, x):
+        return self.a * (x ** 3) + self.b * (x ** 2) + self.c * x + self.d
+
+class QuarticFunction:
+    def __init__(self, a, b, c, d, e):
+        self.a = a
+        self.b = b
+        self.c = c
+        self.d = d
+        self.e = e
+        
+    def run(self, x):
+        return self.a * (x ** 4) + self.b * (x ** 3) + self.c * (x ** 2) + self.d * x + self.e
+    
+class SlinkyTopography:
+    def __init__(self, segheight, segwidth, numsegs, heightfunc=ConstFunction(A)):
+        self.objects=[]
+        self.springs=[]
+        self.segheight=segheight
+        self.segwidth=segwidth
+        self.heightFunc=heightfunc
+        self.numsegs=numsegs
+    
+    def add_object(self, x, halfsize, rotation=0):
+        self.objects.append([x, halfsize, rotation])
+        return len(self.objects) - 1
+
+    # actuation 0.0 will be translated into default actuation
+    def add_spring(self, a, b, offset_a, offset_b, length, stiffness, actuation=0.0):
+        self.springs.append([a, b, offset_a, offset_b, length, stiffness, actuation])
+    
+    def slinkyRobot(self):
+        numsegs = self.numsegs
+        heightfunc = self.heightFunc
+        segwidth = self.segwidth
+        segheight = self.segheight
+    
+        # Hinge spring parameters
+        stiffness = 50  # Stiffness of the hinge
+        flexy = 0.5
+        
+        floorY = 0.1
+        wallX = 0.1
+        baseY = (heightfunc.run(0) + segheight) / 2 + floorY
+        baseX = segwidth / 2 + wallX
+        
+        body = self.add_object([baseX, baseY], [0.01, (heightfunc.run(0) + segheight) / 2])
+        prev = body
+            
+        for i in range(1, numsegs + 1):
+            prevHeight = segheight + heightfunc.run(i-1)
+            currHeight = segheight + heightfunc.run(i)
+            connX = (i - 0.5) * segwidth + wallX
+            spineX = i * segwidth + wallX
+            
+            rot = math.atan2(segwidth, prevHeight)
+            connLength = math.sqrt(segwidth ** 2 + prevHeight ** 2)
+            conn = self.add_object([connX, prevHeight/2 + floorY], [0.01, connLength/2], rotation=rot)
+
+            spine = self.add_object([spineX, currHeight/2 + floorY], [0.01, currHeight/2])
+            
+            self.add_spring(prev, conn, [0, prevHeight/2 - 0.01], [0, connLength/2 - 0.01], -1, stiffness)
+            
+            self.add_spring(conn, spine, [0, -1 * connLength/2 + 0.01], [0, -1 * currHeight/2 + 0.01], -1, stiffness)
+            
+            self.add_spring(prev, spine, [0, -1 * prevHeight/2 + 0.01], [0, -1 * currHeight/2 + 0.01], 
+                length=segwidth,
+                stiffness=flexy)
+            
+            springLength = math.sqrt(segwidth ** 2 + (currHeight - prevHeight) ** 2)
+            self.add_spring(prev, spine, [0, prevHeight/2 - 0.01], [0, currHeight/2 - 0.01], 
+                length=springLength,
+                stiffness=flexy)
+            
+            prev = spine
+        
+        return self.objects, self.springs, body
 
 
 def main():
-    setup_robot(*robots[robot_id]())
+    
+    #setup_robot(*robots[robot_id]())
+    aSlinky = SlinkyTopography(SH, SW, NS, CubicFunction(A, B, C, D))
+    setup_robot(*aSlinky.slinkyRobot())
 
     if cmd == 'plot':
         ret = {}
@@ -521,15 +666,10 @@ def main():
                 losses = optimize(toi=toi, visualize=False)
                 # losses = gaussian_filter(losses, sigma=3)
                 ret[toi].append(losses)
-
-        import pickle
-        pickle.dump(ret, open('losses.pkl', 'wb'))
-        print("Losses saved to losses.pkl")
     else:
         optimize(toi=True, visualize=True)
 
     clear_states()
-    forward('final{}'.format(robot_id))
 
 
 if __name__ == '__main__':
