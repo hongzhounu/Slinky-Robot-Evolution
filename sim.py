@@ -15,9 +15,9 @@ def generate_samples(x, n):
     return np.random.normal(loc=x, scale=scale, size=n)
 
 # Hyperparameters
-GENERATION = 15
-population_size = 10
-center_A, center_B, center_C, center_D, center_E = 0.000013,0.000023,-0.000008,0.000006,0.000006
+GENERATION = # Set Generation number
+population_size = # Set Population size
+center_A, center_B, center_C, center_D, center_E = 0,0,0,0,0 # Default to 0
 A = generate_samples(center_A, population_size)
 B = generate_samples(center_B, population_size)
 C = generate_samples(center_C, population_size)
@@ -43,9 +43,9 @@ for i in range(population_size):
            str(numSeg),
            str(A[i]),
            str(B[i]),
-           str(C[i])]
-        #    str(D[i]),
-        #    str(E[i])]
+           str(C[i]),
+           str(D[i]),
+           str(E[i])]
     process[i] = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
 for i in range(population_size):
@@ -80,7 +80,7 @@ D_sorted = D[sorted_indices]
 E_sorted = E[sorted_indices]
 
 
-to_dir = "generations_quartic"
+to_dir = "" # Update generations
 os.makedirs(to_dir, exist_ok=True)
 file_path = f"{to_dir}/gen_{GENERATION}.csv"
 ranks = np.arange(1, len(losses_sorted) + 1)

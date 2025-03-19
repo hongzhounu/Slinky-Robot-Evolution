@@ -539,7 +539,7 @@ A = float(sys.argv[5])
 B = float(sys.argv[6])
 C = float(sys.argv[7])
 D = float(sys.argv[8])
-# E = float(sys.argv[9])
+E = float(sys.argv[9])
 
 
 class ConstFunction:
